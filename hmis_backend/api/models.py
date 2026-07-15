@@ -59,3 +59,98 @@ class Patient(models.model0):
         return f"{self.first_name} {self.last_name}"
     
     
+    
+class Document(models.model):
+    """
+    A singele uploaded files linked to a patient record.
+    
+    Only the files *path* and metadata live in postgres -  the binary
+    content lives on disk /  objects storage. this keeps the DB small 
+    backups fast and lets us swap the storage backend (eg S3)
+    """
+    
+    DOCUMENT_TYPES = [
+        ("photo", "Patient Photo"),
+        ("national_id", "National ID"),
+        ("lab_report", "Lab Report"),
+        ("xray", "X-Ray / Imaging"),
+        ("prescription", "Prescription"),
+        ("discharge_summary", "Discahrge Summary"),
+        ("insurance", " Insurance Document"),
+        ("other", " Other"),
+        
+    ]
+    
+    ALLOWED_CONTENT_TYPES = [
+        "image/jpeg",
+        "images/png",
+        "application/pdf",
+    ]
+    
+    patient = models.ForeignKey(
+        Patient, on_delete=models.CASCADE, related_name = "documents"
+    )
+    document_type= models.CharField(max_length=30 , choices=DOCUMENT_TYPES)
+    file = models.FileField(
+        upload_to=patient_document_path,
+        validators=[validate_file_size]
+    )
+    original_filename =  models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    file_size= models.PositiveIntegerField(help_text="size in bytes")
+    description = models.CharField(max_length=255 , blank=True)
+    uploaded_by =  models.ForeignKey(
+        settings.AUTH_USER_MODEL , on_delete=models.SET_NULL , null=True
+    )
+    uploaded_at =  models.DateTimeField(auto_now_add=True)
+    is_archived = models.BooleanField(default=False)
+    
+    class Meta:
+        ordering =  ["-uploaded_at"]
+        indexes = [
+            models.Index(fields=["patient", "document_type"]),
+        ]
+        
+    def __str__(self):
+        return f"{self.get_document_type_display()} - {self.patient.full_name}"
+    
+    def clean(self):
+        if self.content_type not in self.ALLOWED_CONTENT_TYPES:
+            raise ValidationError(
+                f"Unsupported files type: {self.content_type}."
+                f"Allowed: {', '.join(self.ALLOWED_CONTENT_TYPES)}"
+            )
+    
+    
+
+class DocumentAuditLog(models.Model):
+    """
+
+    Append-only trail of who touched a document and when.
+    Required for any system holding medical/PII data.
+    """
+    
+    ACTIONS =  [
+        ("upload", "Uplaoded"),
+        ("view", "Viewed"),
+        ("download", "Downloaded"),
+        ("archive", "Archived"),
+        ("delete", "Deleted"),
+        
+    ]
+    
+    document = models.ForeignKey(
+        Document , on_delete=models.CASCADE , related_name="audit_logs"
+    )
+    user =  models.ForeignKey(
+        settings.AUTH_USER_MODEL , on_delete=models.SET_NULL , null=True
+    )
+    action=models.CharField(max_length=20 , choices=ACTIONS)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ["-timestamp"]
+        
+    def __str__(self):
+        return f"{self.action} on Documents#{self.document_id} ny {self.user}"
